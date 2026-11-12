@@ -16,9 +16,16 @@ import {
   RefreshCw,
   History,
   CheckCircle2,
+  Maximize2,
+  Minimize2,
+  BookOpen,
+  Eye,
+  FileText,
 } from 'lucide-react';
-import { ChatMessage, Jurisdiction, LawBranch, PersonaMode, LegalChatSession } from '../types/legal';
+import { ChatMessage, Jurisdiction, LawBranch, PersonaMode, LegalChatSession, LegalAttachment } from '../types/legal';
 import { QUICK_LEGAL_PROMPTS } from '../data/legalTaxonomy';
+import { FocusReadingBar, ReadingTheme, ReadingFont } from './FocusReadingBar';
+import { ChatAttachmentToolbar } from './ChatAttachmentToolbar';
 import {
   loadSavedSessions,
   saveAllSessions,
@@ -29,6 +36,7 @@ import {
   getInitialWelcomeMessage,
 } from '../utils/sessionStorage';
 import { SavedSessionsDrawer } from './SavedSessionsDrawer';
+import { generateAutonomousLegalOpinion } from '../utils/autonomousLegalEngine';
 
 interface ChatChamberProps {
   jurisdiction: Jurisdiction;
@@ -39,6 +47,8 @@ interface ChatChamberProps {
   setPersonaMode?: (p: PersonaMode) => void;
   injectedQuery?: string | null;
   onClearInjectedQuery?: () => void;
+  isFocusMode?: boolean;
+  setIsFocusMode?: (val: boolean) => void;
 }
 
 export const ChatChamber: React.FC<ChatChamberProps> = ({
@@ -50,7 +60,23 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
   setPersonaMode,
   injectedQuery,
   onClearInjectedQuery,
+  isFocusMode,
+  setIsFocusMode,
 }) => {
+  // Focus Reading Mode State
+  const [internalFocusMode, setInternalFocusMode] = useState(false);
+  const isFocused = isFocusMode !== undefined ? isFocusMode : internalFocusMode;
+  const setIsFocused = (val: boolean) => {
+    setInternalFocusMode(val);
+    if (setIsFocusMode) setIsFocusMode(val);
+  };
+
+  const [fontSize, setFontSize] = useState<number>(17);
+  const [readingTheme, setReadingTheme] = useState<ReadingTheme>('obsidian');
+  const [readingFont, setReadingFont] = useState<ReadingFont>('amiri');
+  const [lineHeight, setLineHeight] = useState<'relaxed' | 'loose'>('loose');
+  const [focusSingleMemoId, setFocusSingleMemoId] = useState<string | null>(null);
+
   // Saved Sessions State
   const [sessions, setSessions] = useState<LegalChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -60,6 +86,8 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
   // Chat conversation state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<LegalAttachment[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [thoughtPhase, setThoughtPhase] = useState<string>('');
   const [isRecording, setIsRecording] = useState(false);
@@ -108,6 +136,32 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
   useEffect(() => {
     scrollToBottom();
   }, [messages, thoughtPhase]);
+
+  // Escape key to exit focus reading mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFocused) {
+        setIsFocused(false);
+        setFocusSingleMemoId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFocused]);
+
+  const handleEnterFocusMode = () => {
+    setIsFocused(true);
+  };
+
+  const handleEnterFocusOnMemo = (messageId: string) => {
+    setFocusSingleMemoId(messageId);
+    setIsFocused(true);
+  };
+
+  const handleExitFocusMode = () => {
+    setIsFocused(false);
+    setFocusSingleMemoId(null);
+  };
 
   // 4. Persist messages to LocalStorage when updated
   const persistCurrentMessages = (updatedMsgs: ChatMessage[], firstUserPrompt?: string) => {
@@ -332,27 +386,38 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
 
   // 8. Submit message and stream response from server
   const handleSend = async (messageText?: string) => {
-    const textToSend = messageText || input;
-    if (!textToSend.trim() || isLoading) return;
+    const currentAttachments = [...attachments];
+    let textToSend = (messageText !== undefined ? messageText : input).trim();
+
+    // If no text but attachments exist, construct informative query
+    if (!textToSend && currentAttachments.length > 0) {
+      textToSend = `يرجى فحص وتدقيق المستندات القانونية المرفقة (${currentAttachments.map((a) => a.name).join('، ')})، واستخراج التكييف النظامي، ورصد المخاطر والثغرات، وتحديد الإجراءات الواجبة.`;
+    }
+
+    if (!textToSend || isLoading) return;
 
     const userMessage: ChatMessage = {
       id: `usr-${Date.now()}`,
       role: 'user',
-      content: textToSend.trim(),
+      content: textToSend,
       timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+      attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
     };
 
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
     setInput('');
+    setAttachments([]);
     setIsLoading(true);
 
     // Save user message immediately to LocalStorage
-    persistCurrentMessages(updatedMessages, textToSend.trim());
+    persistCurrentMessages(updatedMessages, textToSend);
 
     // Dynamic thinking phase indicator simulation
     const phases = [
-      'يقوم العقل المستقل بالتكييف القانوني الأولي للوقائع المطروحة...',
+      currentAttachments.length > 0
+        ? 'يقوم العقل المستقل بفحص المستندات والمحررات المرفقة وتجريد وقائعها...'
+        : 'يقوم العقل المستقل بالتكييف القانوني الأولي للوقائع المطروحة...',
       'استدعاء النصوص التشريعية والقواعد الآمرة ذات الصلة...',
       'فحص السوابق القضائية ومبادئ محكمة النقض والتمييز...',
       'تركيب الحجة وصياغة المشورة باللسان القانوني الطبيعي...',
@@ -391,6 +456,7 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
           messages: updatedMessages.map((m) => ({
             role: m.role,
             content: m.content,
+            attachments: m.attachments,
           })),
           jurisdiction,
           lawBranch,
@@ -411,62 +477,98 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
       }
 
       let accumulatedText = '';
+      let streamBuffer = '';
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        streamBuffer += decoder.decode(value, { stream: true });
+        const lines = streamBuffer.split('\n');
+        // Keep the last part which might be an incomplete line
+        streamBuffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.replace('data: ', '').trim();
-            if (!dataStr) continue;
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const dataStr = trimmed.slice(6).trim();
+          if (!dataStr) continue;
 
-            try {
-              const parsed = JSON.parse(dataStr);
-              if (parsed.text) {
-                accumulatedText += parsed.text;
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === modelMsgId
-                      ? { ...m, content: accumulatedText, isStreaming: true }
-                      : m
-                  )
-                );
-              }
-              if (parsed.done) {
-                const finalMessages = messagesWithPlaceholder.map((m) =>
-                  m.id === modelMsgId ? { ...m, content: accumulatedText, isStreaming: false } : m
-                );
-                setMessages(finalMessages);
-                // Save final complete stream to LocalStorage
-                persistCurrentMessages(finalMessages);
-              }
-              if (parsed.error) {
-                accumulatedText += `\n[ملاحظة: ${parsed.error}]`;
-                const finalMessages = messagesWithPlaceholder.map((m) =>
-                  m.id === modelMsgId ? { ...m, content: accumulatedText, isStreaming: false } : m
-                );
-                setMessages(finalMessages);
-                persistCurrentMessages(finalMessages);
-              }
-            } catch (err) {
-              // Ignore partial json chunk parsing
+          try {
+            const parsed = JSON.parse(dataStr);
+            if (parsed.text) {
+              accumulatedText += parsed.text;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === modelMsgId
+                    ? { ...m, content: accumulatedText, isStreaming: true }
+                    : m
+                )
+              );
             }
+            if (parsed.done) {
+              const finalMessages = messagesWithPlaceholder.map((m) =>
+                m.id === modelMsgId ? { ...m, content: accumulatedText, isStreaming: false } : m
+              );
+              setMessages(finalMessages);
+              persistCurrentMessages(finalMessages);
+            }
+            if (parsed.error) {
+              accumulatedText += `\n[ملاحظة: ${parsed.error}]`;
+              const finalMessages = messagesWithPlaceholder.map((m) =>
+                m.id === modelMsgId ? { ...m, content: accumulatedText, isStreaming: false } : m
+              );
+              setMessages(finalMessages);
+              persistCurrentMessages(finalMessages);
+            }
+          } catch (err) {
+            // Partial JSON chunk
           }
         }
       }
+
+      // Process any trailing data left in buffer
+      if (streamBuffer.trim().startsWith('data: ')) {
+        const dataStr = streamBuffer.trim().slice(6).trim();
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (parsed.text) accumulatedText += parsed.text;
+        } catch (e) {}
+      }
+
+      // Zero-Hang Guarantee: If accumulated text is empty, invoke autonomous legal engine directly
+      if (!accumulatedText.trim()) {
+        const fallback = generateAutonomousLegalOpinion({
+          query: textToSend,
+          jurisdiction,
+          lawBranch,
+          personaMode,
+          attachments: currentAttachments,
+          conversationHistory: updatedMessages.map((m) => ({ role: m.role, content: m.content || '' })),
+        });
+        accumulatedText = fallback;
+      }
+
+      const finalMessages = messagesWithPlaceholder.map((m) =>
+        m.id === modelMsgId ? { ...m, content: accumulatedText, isStreaming: false } : m
+      );
+      setMessages(finalMessages);
+      persistCurrentMessages(finalMessages);
     } catch (error: any) {
       console.error('Error during chat stream:', error);
-      const fallbackText =
-        'عذراً، حدث انقطاع أثناء استدعاء الرأي القانوني. يرجى إعادة المحاولة أو التحقق من الاتصال.';
+      const fallbackOpinion = generateAutonomousLegalOpinion({
+        query: textToSend,
+        jurisdiction,
+        lawBranch,
+        personaMode,
+        attachments: currentAttachments,
+        conversationHistory: updatedMessages.map((m) => ({ role: m.role, content: m.content || '' })),
+      });
       const finalMessages = messagesWithPlaceholder.map((m) =>
         m.id === modelMsgId
           ? {
               ...m,
-              content: m.content || fallbackText,
+              content: m.content || fallbackOpinion,
               isStreaming: false,
             }
           : m
@@ -482,6 +584,243 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
 
   const currentSession = sessions.find((s) => s.id === currentSessionId);
 
+  // FOCUSED READING ROOM RENDER (Expanded text area, hidden sidebars, custom typography)
+  if (isFocused) {
+    const themeBg =
+      readingTheme === 'parchment'
+        ? 'bg-[#18130e] text-[#f5eee6]'
+        : readingTheme === 'pure-black'
+        ? 'bg-[#000000] text-slate-100'
+        : 'bg-[#0a0e17] text-slate-100';
+
+    const fontStyle =
+      readingFont === 'amiri'
+        ? 'font-amiri'
+        : readingFont === 'ibm'
+        ? 'font-sans'
+        : 'font-sans';
+
+    const lineStyle = lineHeight === 'loose' ? 'leading-[2.2]' : 'leading-[1.8]';
+    const memoToFocus = focusSingleMemoId ? messages.find((m) => m.id === focusSingleMemoId) : null;
+
+    return (
+      <div className={`min-h-screen w-full flex flex-col ${themeBg} transition-colors duration-200 fixed inset-0 z-50 overflow-y-auto`}>
+        {/* Top Control Bar for Focus Mode */}
+        <FocusReadingBar
+          fontSize={fontSize}
+          setFontSize={setFontSize}
+          readingTheme={readingTheme}
+          setReadingTheme={setReadingTheme}
+          readingFont={readingFont}
+          setReadingFont={setReadingFont}
+          lineHeight={lineHeight}
+          setLineHeight={setLineHeight}
+          onExitFocusMode={handleExitFocusMode}
+          isSingleMemoMode={!!focusSingleMemoId}
+          onToggleSingleMemoMode={
+            focusSingleMemoId
+              ? () => setFocusSingleMemoId(null)
+              : messages.some((m) => m.role === 'model' && m.content)
+              ? () => {
+                  const lastModel = [...messages].reverse().find((m) => m.role === 'model' && m.content);
+                  if (lastModel) setFocusSingleMemoId(lastModel.id);
+                }
+              : undefined
+          }
+          currentMemoTitle={currentSession?.title}
+        />
+
+        {/* Expansive Reading Space */}
+        <div className="flex-1 px-4 sm:px-8 py-8 max-w-4xl sm:max-w-5xl mx-auto w-full">
+          
+          {/* Subtle contextual breadcrumb */}
+          <div className="border-b border-amber-500/20 pb-4 mb-8 flex flex-wrap items-center justify-between gap-3 text-xs opacity-75">
+            <div className="flex items-center gap-2">
+              <Scale className="w-4 h-4 text-amber-400" />
+              <span className="font-bold text-amber-400">العقل المستقل - المحاورة والاستشارات القانونية</span>
+              <span>·</span>
+              <span>{jurisdiction}</span>
+              <span>·</span>
+              <span>{lawBranch}</span>
+            </div>
+            <div className="text-slate-400">
+              اضغط <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-amber-300 font-mono text-[10px]">Esc</kbd> للخروج من وضع القراءة
+            </div>
+          </div>
+
+          {/* Render Isolated Single Memo or Complete Thread */}
+          {memoToFocus ? (
+            <div
+              className={`p-6 sm:p-12 rounded-2xl border transition-all ${
+                readingTheme === 'parchment'
+                  ? 'bg-[#231b14] border-amber-900/40 shadow-2xl'
+                  : readingTheme === 'pure-black'
+                  ? 'bg-[#090909] border-slate-800 shadow-2xl'
+                  : 'bg-[#101625] border-slate-800/90 shadow-2xl'
+              }`}
+            >
+              {/* Judicial Treaty Header */}
+              <div className="text-center pb-6 mb-8 border-b border-amber-500/30">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 text-amber-300 text-xs mb-3 border border-amber-500/30">
+                  <Scale className="w-3.5 h-3.5" />
+                  <span>مذكرة رأي وتأصيل قضائي مستقل</span>
+                </div>
+                <h2 className="text-xl sm:text-2xl font-bold text-amber-400">
+                  {currentSession?.title || 'مذكرة استشارية وقضائية'}
+                </h2>
+                <div className="text-xs text-slate-400 mt-2 flex items-center justify-center gap-2">
+                  <span>الاختصاص: {memoToFocus.jurisdiction || jurisdiction}</span>
+                  <span>·</span>
+                  <span>الفرع: {memoToFocus.lawBranch || lawBranch}</span>
+                  <span>·</span>
+                  <span>التوقيت: {memoToFocus.timestamp}</span>
+                </div>
+              </div>
+
+              {/* Memo Content with Custom Font & Size */}
+              <div
+                className={`prose prose-invert max-w-none ${fontStyle} ${lineStyle} whitespace-pre-wrap text-justify`}
+                style={{ fontSize: `${fontSize}px` }}
+              >
+                {memoToFocus.content}
+              </div>
+
+              {/* Action Tools */}
+              <div className="mt-8 pt-5 border-t border-slate-800/80 flex items-center justify-between flex-wrap gap-2 text-xs">
+                <button
+                  onClick={() => setFocusSingleMemoId(null)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors cursor-pointer"
+                >
+                  <span>عرض كامل الحوار القانوني</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => speakText(memoToFocus.content, memoToFocus.id)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 transition-colors cursor-pointer"
+                  >
+                    <Volume2 className="w-3.5 h-3.5" />
+                    <span>{speakingId === memoToFocus.id ? 'إيقاف الصوت' : 'استماع صوتي'}</span>
+                  </button>
+                  <button
+                    onClick={() => copyMessage(memoToFocus.content, memoToFocus.id)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>نسخ</span>
+                  </button>
+                  <button
+                    onClick={() => printOpinion(memoToFocus)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>طباعة رسمية</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-8">
+              {messages.map((message) => {
+                const isUser = message.role === 'user';
+                if (isUser) {
+                  return (
+                    <div
+                      key={message.id}
+                      className="p-4 rounded-xl bg-blue-950/20 border border-blue-800/30 text-blue-200"
+                    >
+                      <div className="text-xs font-bold text-blue-400 mb-1 flex items-center gap-1.5">
+                        <span>سؤال المستشير / واقعة النزاع المطروحة:</span>
+                      </div>
+                      {message.attachments && message.attachments.length > 0 && (
+                        <div className="mb-2 flex flex-wrap gap-1.5">
+                          {message.attachments.map((att) => (
+                            <div
+                              key={att.id}
+                              className="flex items-center gap-1.5 bg-blue-900/40 border border-blue-700/50 rounded-lg px-2 py-0.5 text-xs text-blue-200"
+                            >
+                              <span className="font-bold text-[9px] bg-blue-500/30 text-blue-300 px-1 rounded font-mono">
+                                {att.category.toUpperCase()}
+                              </span>
+                              <span className="truncate max-w-[160px] font-medium">{att.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="text-sm font-sans leading-relaxed">
+                        {message.content}
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div
+                    key={message.id}
+                    className={`p-6 sm:p-10 rounded-2xl border transition-all ${
+                      readingTheme === 'parchment'
+                        ? 'bg-[#221b15] border-amber-900/30 shadow-xl'
+                        : readingTheme === 'pure-black'
+                        ? 'bg-[#090909] border-slate-800 shadow-xl'
+                        : 'bg-[#101625] border-slate-800 shadow-xl'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between pb-3 mb-5 border-b border-slate-800/80 text-xs">
+                      <div className="flex items-center gap-2 font-bold text-amber-400">
+                        <Scale className="w-4 h-4 text-amber-400" />
+                        <span>الرأي والتأصيل القانوني للعقل المستقل</span>
+                        <span className="text-[10px] text-slate-400 font-normal">
+                          ({message.personaMode === 'friendly' ? 'محاور طبيعي' : message.personaMode === 'advocate' ? 'محامٍ مدافع' : 'مستشار قضائي'})
+                        </span>
+                      </div>
+                      <span className="text-slate-500 text-[11px]">{message.timestamp}</span>
+                    </div>
+
+                    <div
+                      className={`prose prose-invert max-w-none ${fontStyle} ${lineStyle} whitespace-pre-wrap text-justify`}
+                      style={{ fontSize: `${fontSize}px` }}
+                    >
+                      {message.content}
+                    </div>
+
+                    <div className="mt-6 pt-4 border-t border-slate-800/60 flex items-center justify-between flex-wrap gap-2 text-xs">
+                      <span className="text-slate-500 text-[11px]">مكتمل ومعتمد قضائياً</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleEnterFocusOnMemo(message.id)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-amber-400 transition-colors cursor-pointer"
+                          title="عزل هذه المذكرة في صفحة قراءة مستقلة"
+                        >
+                          <Maximize2 className="w-3.5 h-3.5 text-amber-400" />
+                          <span>عزل المذكرة</span>
+                        </button>
+                        <button
+                          onClick={() => speakText(message.content, message.id)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-amber-400 transition-colors cursor-pointer"
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span>استماع</span>
+                        </button>
+                        <button
+                          onClick={() => copyMessage(message.content, message.id)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-amber-400 transition-colors cursor-pointer"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>نسخ</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // STANDARD CONVERSATIONAL CHAMBER VIEW
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] min-h-[600px] max-w-6xl mx-auto w-full relative">
       
@@ -520,8 +859,18 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
           )}
         </div>
 
-        {/* Right tools: Start New Session */}
+        {/* Right tools: Focus Mode & Start New Session */}
         <div className="flex items-center gap-2">
+          {/* Focus Reading Mode Button */}
+          <button
+            onClick={handleEnterFocusMode}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition-colors cursor-pointer"
+            title="تفعيل وضع القراءة المركزة (إخفاء القوائم وتوسيع مساحة النص لقراءة المذكرات الطويلة)"
+          >
+            <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+            <span className="font-semibold">وضع القراءة المركزة</span>
+          </button>
+
           <button
             onClick={handleStartNewSession}
             className="flex items-center gap-1 text-slate-300 hover:text-amber-400 transition-colors cursor-pointer px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60"
@@ -569,11 +918,45 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                   <span className="text-slate-500 text-[11px]">{message.timestamp}</span>
                 </div>
 
+                {/* Attached Documents in User Bubble */}
+                {isUser && message.attachments && message.attachments.length > 0 && (
+                  <div className="mb-2.5 flex flex-wrap gap-1.5">
+                    {message.attachments.map((att) => (
+                      <div
+                        key={att.id}
+                        className="flex items-center gap-1.5 bg-blue-950/80 border border-blue-700/60 rounded-lg px-2 py-1 text-[11px] text-blue-200"
+                      >
+                        {att.category === 'image' && att.data ? (
+                          <img
+                            src={att.data}
+                            alt={att.name}
+                            className="w-5 h-5 rounded object-cover border border-blue-500/40"
+                          />
+                        ) : (
+                          <span className="font-bold text-[9px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-mono">
+                            {att.category === 'pdf' ? 'PDF' : att.category === 'word' ? 'DOC' : att.category === 'sheet' ? 'XLS' : 'TXT'}
+                          </span>
+                        )}
+                        <span className="truncate max-w-[150px] font-medium" title={att.name}>
+                          {att.name}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {/* Content body */}
                 <div className="prose prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap font-sans">
-                  {message.content}
-                  {message.isStreaming && (
-                    <span className="inline-block w-2 h-4 bg-amber-400 mr-1 animate-pulse" />
+                  {message.content ? (
+                    message.content
+                  ) : message.isStreaming ? (
+                    <span className="text-amber-300/80 text-xs flex items-center gap-2 italic py-1">
+                      <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                      العقل المستقل يعكف على التكييف وتسطير الرأي القانوني...
+                    </span>
+                  ) : null}
+                  {message.isStreaming && message.content && (
+                    <span className="inline-block w-2 h-4 bg-amber-400 mr-1 animate-pulse align-middle" />
                   )}
                 </div>
 
@@ -586,6 +969,16 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1">
+                      {/* Focus Read this memo */}
+                      <button
+                        onClick={() => handleEnterFocusOnMemo(message.id)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded hover:bg-slate-800 text-slate-400 hover:text-amber-400 transition-colors cursor-pointer"
+                        title="قراءة مركزة وموسعة لهذه المذكرة"
+                      >
+                        <Maximize2 className="w-3.5 h-3.5 text-amber-400" />
+                        <span>قراءة مركزة</span>
+                      </button>
+
                       {/* Read Aloud Voice Button */}
                       <button
                         onClick={() => speakText(message.content, message.id)}
@@ -690,14 +1083,79 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
         </div>
       )}
 
-      {/* Input Form Bar */}
-      <div className="p-4 border-t border-slate-800 bg-[#0d121d]">
+      {/* Input Form Bar & Document Attachment Toolbar */}
+      <div
+        className={`p-4 border-t border-slate-800 bg-[#0d121d] transition-colors ${
+          isDragOver ? 'border-amber-500 bg-amber-950/25 ring-2 ring-amber-500/30' : ''
+        }`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragOver(true);
+        }}
+        onDragLeave={() => setIsDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragOver(false);
+          if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            const files = e.dataTransfer.files;
+            for (let i = 0; i < files.length; i++) {
+              const file = files[i];
+              const ext = file.name.split('.').pop()?.toLowerCase() || '';
+              const category: LegalAttachment['category'] =
+                ext === 'pdf' || file.type === 'application/pdf'
+                  ? 'pdf'
+                  : ['doc', 'docx', 'rtf'].includes(ext)
+                  ? 'word'
+                  : file.type.startsWith('image/')
+                  ? 'image'
+                  : ['csv', 'xlsx', 'xls'].includes(ext)
+                  ? 'sheet'
+                  : 'text';
+
+              const id = `att-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+              if (category === 'image' || category === 'pdf') {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => {
+                  setAttachments((prev) => [
+                    ...prev,
+                    {
+                      id,
+                      name: file.name,
+                      size: file.size,
+                      category,
+                      mimeType: file.type || (category === 'pdf' ? 'application/pdf' : 'image/jpeg'),
+                      data: reader.result as string,
+                    },
+                  ]);
+                };
+              } else {
+                const reader = new FileReader();
+                reader.readAsText(file);
+                reader.onload = () => {
+                  setAttachments((prev) => [
+                    ...prev,
+                    {
+                      id,
+                      name: file.name,
+                      size: file.size,
+                      category,
+                      mimeType: file.type || 'text/plain',
+                      textPreview: ((reader.result as string) || '').slice(0, 15000),
+                    },
+                  ]);
+                };
+              }
+            }
+          }
+        }}
+      >
         <form
           onSubmit={(e) => {
             e.preventDefault();
             handleSend();
           }}
-          className="relative flex items-center gap-2"
+          className="relative flex items-center gap-2 mb-2"
         >
           {/* Voice Input (Speech-To-Text) Button */}
           <button
@@ -725,7 +1183,7 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                 }
               }}
               rows={2}
-              placeholder="اطرح وقائع قضيتك، نزاعك، أو استشارتك القانونية هنا... (مثال: استفسار عن فسخ عقد أو شروط البطلان)"
+              placeholder="اطرح وقائع قضيتك أو أرفق مستنداً بالأسفل... (مثال: أرفق عقد إيجار أو صورة شيك أو محرر لفحصه)"
               className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors resize-none"
             />
             {isRecording && (
@@ -734,12 +1192,17 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                 جاري الاستماع لصوتك...
               </span>
             )}
+            {isDragOver && (
+              <div className="absolute inset-0 bg-amber-950/80 border-2 border-dashed border-amber-400 rounded-xl flex items-center justify-center text-amber-300 font-bold text-xs pointer-events-none">
+                أفلت المستند القانوني هنا للإرفاق الفوري
+              </div>
+            )}
           </div>
 
           {/* Send Button */}
           <button
             type="submit"
-            disabled={!input.trim() || isLoading}
+            disabled={(!input.trim() && attachments.length === 0) || isLoading}
             className="p-3.5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-slate-950 font-bold rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-amber-500/20 cursor-pointer"
             title="إرسال للعقل المستقل"
           >
@@ -747,9 +1210,23 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
           </button>
         </form>
 
+        {/* Toolbar Below the Input: Universal Attachments, Photos, Sheets, Snippets */}
+        <ChatAttachmentToolbar
+          attachments={attachments}
+          onAddAttachments={(newAtts) => setAttachments((prev) => [...prev, ...newAtts])}
+          onRemoveAttachment={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))}
+          onClearAttachments={() => setAttachments([])}
+          onInsertClauseSnippet={(snippet) => setInput((prev) => (prev ? `${prev}\n\n${snippet}` : snippet))}
+          isRecording={isRecording}
+          onToggleRecording={toggleRecording}
+          isLoading={isLoading}
+          onClearText={() => setInput('')}
+          hasText={input.length > 0}
+        />
+
         <div className="flex items-center justify-between mt-2 text-[11px] text-slate-500 px-1">
-          <span>يتم الحفظ التلقائي في LocalStorage بمتصفحك · استرجع أي جلسة من زر "سجل المحادثات"</span>
-          <span className="text-amber-400/80">العقل المستقل يطبق أصول الفقه والقانون العام والمقارن</span>
+          <span>يمكنك سحب وإفلات المستندات مباشرة · الحفظ مشفر وتلقائي في متصفحك</span>
+          <span className="text-amber-400/80">العقل المستقل يحلل النصوص، الصور، والملفات المرفقة</span>
         </div>
       </div>
 

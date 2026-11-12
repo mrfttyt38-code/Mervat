@@ -19,6 +19,16 @@ export type LawBranch =
 
 export type PersonaMode = 'friendly' | 'authoritative' | 'advocate';
 
+export interface LegalAttachment {
+  id: string;
+  name: string;
+  size: number;
+  category: 'pdf' | 'word' | 'image' | 'sheet' | 'text' | 'other';
+  mimeType: string;
+  data?: string; // base64 without prefix or full data URI
+  textPreview?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
@@ -28,6 +38,7 @@ export interface ChatMessage {
   lawBranch?: string;
   personaMode?: PersonaMode;
   isStreaming?: boolean;
+  attachments?: LegalAttachment[];
 }
 
 export interface LegalChatSession {

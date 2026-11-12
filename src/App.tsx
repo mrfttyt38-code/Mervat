@@ -28,6 +28,7 @@ export default function App() {
 
   // Cross-component communication state (e.g. transfer query from auditor or atlas to chat)
   const [injectedChatQuery, setInjectedChatQuery] = useState<string | null>(null);
+  const [isFocusReadingMode, setIsFocusReadingMode] = useState(false);
 
   const handleSelectBranch = (branch: LawBranch) => {
     setLawBranch(branch);
@@ -41,21 +42,24 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 flex flex-col font-sans legal-pattern-bg">
-      {/* Top Mind Header */}
-      <MindHeader
-        jurisdiction={jurisdiction}
-        setJurisdiction={setJurisdiction}
-        lawBranch={lawBranch}
-        setLawBranch={setLawBranch}
-        personaMode={personaMode}
-        setPersonaMode={setPersonaMode}
-        onOpenCognitiveModal={() => setIsCognitiveModalOpen(true)}
-      />
+      {/* Top Mind Header (Hidden in Focused Reading Mode) */}
+      {!isFocusReadingMode && (
+        <MindHeader
+          jurisdiction={jurisdiction}
+          setJurisdiction={setJurisdiction}
+          lawBranch={lawBranch}
+          setLawBranch={setLawBranch}
+          personaMode={personaMode}
+          setPersonaMode={setPersonaMode}
+          onOpenCognitiveModal={() => setIsCognitiveModalOpen(true)}
+        />
+      )}
 
-      {/* Main Navigation Tabs */}
-      <nav className="border-b border-slate-800/80 bg-[#0c101b]/90 sticky top-[95px] lg:top-[85px] z-30 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto py-2 no-scrollbar">
+      {/* Main Navigation Tabs (Hidden in Focused Reading Mode) */}
+      {!isFocusReadingMode && (
+        <nav className="border-b border-slate-800/80 bg-[#0c101b]/90 sticky top-[95px] lg:top-[85px] z-30 backdrop-blur-md">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto py-2 no-scrollbar">
             
             <button
               onClick={() => setActiveTab('chamber')}
@@ -108,6 +112,7 @@ export default function App() {
           </div>
         </div>
       </nav>
+      )}
 
       {/* Main Content Body */}
       <main className="flex-1 flex flex-col">
@@ -121,6 +126,8 @@ export default function App() {
             setPersonaMode={setPersonaMode}
             injectedQuery={injectedChatQuery}
             onClearInjectedQuery={() => setInjectedChatQuery(null)}
+            isFocusMode={isFocusReadingMode}
+            setIsFocusMode={setIsFocusReadingMode}
           />
         )}
 
