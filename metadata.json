@@ -1,0 +1,8 @@
+{
+  "name": "العقل المستقل - المحاور القانوني الذكي",
+  "description": "منظومة العقل المستقل والمحاور اللغوي الطبيعي المتخصص في فروع القانون العام والاستشارات القانونية المتعمقة وتحليل القضايا وصياغة العقود.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
