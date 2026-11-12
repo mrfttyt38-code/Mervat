@@ -21,11 +21,14 @@ import {
   BookOpen,
   Eye,
   FileText,
+  Square,
+  RotateCcw,
 } from 'lucide-react';
-import { ChatMessage, Jurisdiction, LawBranch, PersonaMode, LegalChatSession, LegalAttachment } from '../types/legal';
+import { ChatMessage, Jurisdiction, LawBranch, PersonaMode, VoiceTone, LegalChatSession, LegalAttachment } from '../types/legal';
 import { QUICK_LEGAL_PROMPTS } from '../data/legalTaxonomy';
 import { FocusReadingBar, ReadingTheme, ReadingFont } from './FocusReadingBar';
 import { ChatAttachmentToolbar } from './ChatAttachmentToolbar';
+import { RichMessageRenderer } from './RichMessageRenderer';
 import {
   loadSavedSessions,
   saveAllSessions,
@@ -42,9 +45,11 @@ interface ChatChamberProps {
   jurisdiction: Jurisdiction;
   lawBranch: LawBranch;
   personaMode: PersonaMode;
+  voiceTone?: VoiceTone;
   onSelectBranch: (branch: LawBranch) => void;
   setJurisdiction?: (j: Jurisdiction) => void;
   setPersonaMode?: (p: PersonaMode) => void;
+  setVoiceTone?: (v: VoiceTone) => void;
   injectedQuery?: string | null;
   onClearInjectedQuery?: () => void;
   isFocusMode?: boolean;
@@ -55,9 +60,11 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
   jurisdiction,
   lawBranch,
   personaMode,
+  voiceTone = 'friendly',
   onSelectBranch,
   setJurisdiction,
   setPersonaMode,
+  setVoiceTone,
   injectedQuery,
   onClearInjectedQuery,
   isFocusMode,
@@ -91,12 +98,20 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [thoughtPhase, setThoughtPhase] = useState<string>('');
   const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [autoVoiceReply, setAutoVoiceReply] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const lastInputWasVoiceRef = useRef<boolean>(false);
 
   // 1. Initialize sessions from LocalStorage on mount
   useEffect(() => {
@@ -109,9 +124,10 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
       if (active.jurisdiction && setJurisdiction) setJurisdiction(active.jurisdiction);
       if (active.lawBranch) onSelectBranch(active.lawBranch);
       if (active.personaMode && setPersonaMode) setPersonaMode(active.personaMode);
+      if (active.voiceTone && setVoiceTone) setVoiceTone(active.voiceTone);
     } else {
       // Create first initial session
-      const fresh = createNewSession(jurisdiction, lawBranch, personaMode);
+      const fresh = createNewSession(jurisdiction, lawBranch, personaMode, undefined, voiceTone);
       setSessions([fresh]);
       setCurrentSessionId(fresh.id);
       setMessages(fresh.messages);
@@ -175,7 +191,7 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
       let newTitle = current.title;
 
       // If title is default or first user prompt exists, give meaningful title
-      if ((newTitle === 'استشارة قانونية جديدة' || !newTitle) && firstUserPrompt) {
+      if ((newTitle === 'استشارة قانونية جديدة' || newTitle === 'جلسة حوار ومعرفة جديدة' || !newTitle) && firstUserPrompt) {
         newTitle = deriveTitleFromMessage(firstUserPrompt);
       }
 
@@ -187,6 +203,7 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
         jurisdiction,
         lawBranch,
         personaMode,
+        voiceTone,
       };
 
       const newSessionsList = [...prevSessions];
@@ -203,7 +220,7 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
     setTimeout(() => setAutoSavedFlash(false), 2500);
   };
 
-  // 5. Speech Recognition Setup (STT)
+  // 5. Speech Recognition Setup (STT fallback + MediaRecorder cleanup)
   useEffect(() => {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -226,50 +243,199 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
 
       recognitionRef.current = recognition;
     }
+
+    return () => {
+      audioRef.current?.pause();
+      window.speechSynthesis?.cancel();
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
   }, []);
 
-  const toggleRecording = () => {
-    if (!recognitionRef.current) {
-      alert('ميزة التعرف الصوتي غير مدعومة في متصفحك الحالي، يمكنك الكتابة مباشرة.');
-      return;
+  const stopAllSpeech = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
     }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeakingId(null);
+  };
 
-    if (isRecording) {
-      recognitionRef.current.stop();
-      setIsRecording(false);
-    } else {
-      try {
-        recognitionRef.current.start();
-        setIsRecording(true);
-      } catch (e) {
-        setIsRecording(false);
+  const transcribeRecordedBlob = async (blob: Blob, mimeType: string) => {
+    setIsTranscribing(true);
+    setVoiceNotice(null);
+    try {
+      const reader = new FileReader();
+      const base64: string = await new Promise((resolve, reject) => {
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+
+      const res = await fetch('/api/voice/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64: base64, mimeType }),
+      });
+
+      if (!res.ok) throw new Error('Transcription API failed');
+      const data = await res.json();
+      const transcribed = (data?.text || '').trim();
+      if (transcribed) {
+        lastInputWasVoiceRef.current = true;
+        if (autoVoiceReply) {
+          handleSend(transcribed);
+        } else {
+          setInput((prev) => (prev ? `${prev} ${transcribed}` : transcribed));
+        }
+      } else {
+        setVoiceNotice('لم نلتقط كلاماً واضحاً في التسجيل، حاول التحدث بالقرب من الميكروفون.');
       }
+    } catch {
+      setVoiceNotice('تعذر تفريغ التسجيل سحابياً، يمكنك استخدام الكتابة أو المحاولة مجدداً.');
+    } finally {
+      setIsTranscribing(false);
     }
   };
 
-  // 6. Text to Speech (TTS)
-  const speakText = (text: string, id: string) => {
-    if (!('speechSynthesis' in window)) {
-      alert('ميزة القراءة الصوتية غير مدعومة في متصفحك.');
+  const toggleRecording = async () => {
+    setVoiceNotice(null);
+
+    // Stop active MediaRecorder if currently recording
+    if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
       return;
     }
 
+    // Stop active SpeechRecognition fallback if currently recording
+    if (isRecording && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    // Prefer MediaRecorder + Gemini 3.5 Transcribe for universal Arabic/English accuracy
+    if (navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined') {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStreamRef.current = stream;
+        const preferredMime = MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : MediaRecorder.isTypeSupported('audio/mp4')
+          ? 'audio/mp4'
+          : '';
+        const recorder = preferredMime
+          ? new MediaRecorder(stream, { mimeType: preferredMime })
+          : new MediaRecorder(stream);
+
+        audioChunksRef.current = [];
+        recorder.ondataavailable = (ev) => {
+          if (ev.data && ev.data.size > 0) {
+            audioChunksRef.current.push(ev.data);
+          }
+        };
+        recorder.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          mediaStreamRef.current = null;
+          const mime = recorder.mimeType || 'audio/webm';
+          const blob = new Blob(audioChunksRef.current, { type: mime });
+          if (blob.size > 300) {
+            transcribeRecordedBlob(blob, mime);
+          }
+        };
+
+        mediaRecorderRef.current = recorder;
+        recorder.start();
+        setIsRecording(true);
+        return;
+      } catch {
+        // Fall through to SpeechRecognition or show helpful notice
+      }
+    }
+
+    if (recognitionRef.current) {
+      try {
+        lastInputWasVoiceRef.current = true;
+        recognitionRef.current.start();
+        setIsRecording(true);
+        return;
+      } catch {
+        setIsRecording(false);
+      }
+    }
+
+    setVoiceNotice('الرجاء السماح بصلاحية الميكروفون من إعدادات المتصفح للتحدث صوتياً، أو استخدم الكتابة مباشرة.');
+  };
+
+  // 6. Natural Text to Speech (Gemini TTS primary + Web Speech fallback)
+  const speakText = async (text: string, id: string) => {
+    setVoiceNotice(null);
     if (speakingId === id) {
-      window.speechSynthesis.cancel();
-      setSpeakingId(null);
+      stopAllSpeech();
       return;
     }
 
-    window.speechSynthesis.cancel();
+    stopAllSpeech();
+    setSpeakingId(id);
 
-    const cleanText = text
-      .replace(/[#*`_~]/g, '')
-      .replace(/\[.*?\]/g, '')
+    const cleanForBrowserSpeech = text
+      .replace(/```[\s\S]*?```/g, ' ... الكود البرمجي موضح على الشاشة ... ')
+      .replace(/\|[-:\s|]+\|/g, ' ')
+      .replace(/\|/g, '، ')
+      .replace(/[#*`_~>]/g, '')
+      .replace(/\[(.*?)\]\(.*?\)/g, '$1')
       .trim();
 
-    const utterance = new SpeechSynthesisUtterance(cleanText);
+    // Try Studio-Grade Gemini Natural TTS first
+    try {
+      const res = await fetch('/api/voice/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voiceTone }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.audioBase64) {
+          const audio = new Audio(`data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`);
+          audioRef.current = audio;
+          audio.onended = () => {
+            setSpeakingId(null);
+            audioRef.current = null;
+          };
+          audio.onerror = () => {
+            setSpeakingId(null);
+            audioRef.current = null;
+          };
+          await audio.play();
+          return;
+        }
+      }
+    } catch {
+      // Fallback smoothly to browser speechSynthesis
+    }
+
+    if (!('speechSynthesis' in window)) {
+      setSpeakingId(null);
+      setVoiceNotice('تعذر تشغيل الصوت في المتصفح الحالي.');
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(cleanForBrowserSpeech);
     utterance.lang = 'ar-SA';
-    utterance.rate = 1.0;
+    if (voiceTone === 'formal') {
+      utterance.rate = 0.94;
+      utterance.pitch = 0.92;
+    } else if (voiceTone === 'technical') {
+      utterance.rate = 1.06;
+      utterance.pitch = 1.0;
+    } else {
+      utterance.rate = 1.02;
+      utterance.pitch = 1.05;
+    }
 
     const voices = window.speechSynthesis.getVoices();
     const arabicVoice = voices.find((v) => v.lang.startsWith('ar'));
@@ -279,8 +445,6 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
 
     utterance.onend = () => setSpeakingId(null);
     utterance.onerror = () => setSpeakingId(null);
-
-    setSpeakingId(id);
     window.speechSynthesis.speak(utterance);
   };
 
@@ -291,13 +455,26 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
   };
 
   const printOpinion = (msg: ChatMessage) => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
 
-    printWindow.document.write(`
+    const doc = iframe.contentWindow?.document;
+    if (!doc) {
+      document.body.removeChild(iframe);
+      return;
+    }
+
+    doc.open();
+    doc.write(`
       <html dir="rtl" lang="ar">
         <head>
-          <title>مذكرة رأي واستشارة قانونية - العقل المستقل</title>
+          <title>مذكرة رأي وتحليل - العقل المستقل</title>
           <style>
             body { font-family: 'Cairo', 'Traditional Arabic', serif; padding: 40px; color: #1e293b; line-height: 1.8; }
             .header { border-bottom: 2px solid #b45309; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; }
@@ -310,30 +487,35 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
         <body>
           <div class="header">
             <div>
-              <div class="title">العقل المستقل - المحاور القانوني الذكي</div>
-              <div class="meta">النظام: ${msg.jurisdiction || jurisdiction} · الفرع: ${msg.lawBranch || lawBranch} · التاريخ: ${new Date().toLocaleDateString('ar-EG')}</div>
+              <div class="title">العقل المستقل - المحاور الموسوعي والقانوني</div>
+              <div class="meta">التخصص: ${msg.lawBranch || lawBranch} · النظام: ${msg.jurisdiction || jurisdiction} · التاريخ: ${new Date().toLocaleDateString('ar-EG')}</div>
             </div>
             <div style="text-align: left; font-size: 13px; color: #78350f; font-weight: bold;">
               رأي استشاري وتحليلي
             </div>
           </div>
-          <div class="content">${msg.content}</div>
+          <div class="content">${msg.content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
           <div class="disclaimer">
-            صدر هذا الرأي عن منظومة العقل المستقل والمحاور القانوني الذكي. الرأي موجه للدعم الاستراتيجي والتكييف الأولي ويخضع لتقدير قاضي الموضوع.
+            صدر هذا التحليل عن منظومة العقل المستقل (صوت وكتابة).
           </div>
         </body>
       </html>
     `);
-    printWindow.document.close();
-    printWindow.focus();
-    printWindow.print();
+    doc.close();
+    iframe.contentWindow?.focus();
+    iframe.contentWindow?.print();
+    setTimeout(() => {
+      if (document.body.contains(iframe)) {
+        document.body.removeChild(iframe);
+      }
+    }, 1500);
   };
 
   // 7. Session Management Handlers
   const handleStartNewSession = () => {
-    window.speechSynthesis?.cancel();
+    stopAllSpeech();
     setSpeakingId(null);
-    const fresh = createNewSession(jurisdiction, lawBranch, personaMode);
+    const fresh = createNewSession(jurisdiction, lawBranch, personaMode, undefined, voiceTone);
     setSessions((prev) => [fresh, ...prev]);
     setCurrentSessionId(fresh.id);
     setMessages(fresh.messages);
@@ -350,6 +532,7 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
     if (target.jurisdiction && setJurisdiction) setJurisdiction(target.jurisdiction);
     if (target.lawBranch) onSelectBranch(target.lawBranch);
     if (target.personaMode && setPersonaMode) setPersonaMode(target.personaMode);
+    if (target.voiceTone && setVoiceTone) setVoiceTone(target.voiceTone);
   };
 
   const handleDeleteSession = (sessionId: string) => {
@@ -377,24 +560,30 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
 
   const handleClearAllSessions = () => {
     clearAllSavedSessions();
-    const fresh = createNewSession(jurisdiction, lawBranch, personaMode);
+    const fresh = createNewSession(jurisdiction, lawBranch, personaMode, undefined, voiceTone);
     setSessions([fresh]);
     setCurrentSessionId(fresh.id);
     setMessages(fresh.messages);
     setIsHistoryDrawerOpen(false);
   };
 
+  const handleStopGenerating = () => {
+    abortControllerRef.current?.abort();
+  };
+
   // 8. Submit message and stream response from server
-  const handleSend = async (messageText?: string) => {
-    const currentAttachments = [...attachments];
+  const handleSend = async (messageText?: string, overrideBaseMessages?: ChatMessage[]) => {
+    const currentAttachments = overrideBaseMessages ? [] : [...attachments];
     let textToSend = (messageText !== undefined ? messageText : input).trim();
 
     // If no text but attachments exist, construct informative query
     if (!textToSend && currentAttachments.length > 0) {
-      textToSend = `يرجى فحص وتدقيق المستندات القانونية المرفقة (${currentAttachments.map((a) => a.name).join('، ')})، واستخراج التكييف النظامي، ورصد المخاطر والثغرات، وتحديد الإجراءات الواجبة.`;
+      textToSend = `يرجى فحص وتحليل الملفات والمستندات المرفقة (${currentAttachments.map((a) => a.name).join('، ')})، واستخلاص أبرز المعطيات العلمية أو التقنية أو التكييف القانوني، وتحديد الخطوات والتوصيات الدقيقة.`;
     }
 
     if (!textToSend || isLoading) return;
+
+    const baseMessages = overrideBaseMessages ?? messages;
 
     const userMessage: ChatMessage = {
       id: `usr-${Date.now()}`,
@@ -404,10 +593,12 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
       attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
     };
 
-    const updatedMessages = [...messages, userMessage];
+    const updatedMessages = overrideBaseMessages ? [...baseMessages] : [...baseMessages, userMessage];
     setMessages(updatedMessages);
-    setInput('');
-    setAttachments([]);
+    if (!overrideBaseMessages) {
+      setInput('');
+      setAttachments([]);
+    }
     setIsLoading(true);
 
     // Save user message immediately to LocalStorage
@@ -416,11 +607,11 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
     // Dynamic thinking phase indicator simulation
     const phases = [
       currentAttachments.length > 0
-        ? 'يقوم العقل المستقل بفحص المستندات والمحررات المرفقة وتجريد وقائعها...'
-        : 'يقوم العقل المستقل بالتكييف القانوني الأولي للوقائع المطروحة...',
-      'استدعاء النصوص التشريعية والقواعد الآمرة ذات الصلة...',
-      'فحص السوابق القضائية ومبادئ محكمة النقض والتمييز...',
-      'تركيب الحجة وصياغة المشورة باللسان القانوني الطبيعي...',
+        ? 'يقوم العقل المستقل بفحص الملفات والمستندات المرفقة واستخلاص معطياتها...'
+        : 'يقوم العقل المستقل بتحليل السؤال وتحديد الإطار العلمي أو القانوني المختص...',
+      'استدعاء القواعد العلمية والنظريات أو النصوص التشريعية ذات الصلة...',
+      'ربط البراهين والمعادلات والأدلة المنهجية بدقة متكاملة...',
+      'تركيب الفكرة وصياغة الإجابة بأسلوب حواري طبيعي واضح...',
     ];
     let phaseIndex = 0;
     setThoughtPhase(phases[0]);
@@ -438,11 +629,14 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
       jurisdiction,
       lawBranch,
       personaMode,
+      voiceTone,
       isStreaming: true,
     };
 
     const messagesWithPlaceholder = [...updatedMessages, modelMessage];
     setMessages(messagesWithPlaceholder);
+
+    let accumulatedText = '';
 
     try {
       abortControllerRef.current = new AbortController();
@@ -461,6 +655,7 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
           jurisdiction,
           lawBranch,
           personaMode,
+          voiceTone,
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -476,7 +671,6 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
         throw new Error('فشل قراءة استجابة البث');
       }
 
-      let accumulatedText = '';
       let streamBuffer = '';
 
       while (true) {
@@ -536,13 +730,14 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
         } catch (e) {}
       }
 
-      // Zero-Hang Guarantee: If accumulated text is empty, invoke autonomous legal engine directly
+      // Zero-Hang Guarantee: If accumulated text is empty, invoke autonomous engine directly
       if (!accumulatedText.trim()) {
         const fallback = generateAutonomousLegalOpinion({
           query: textToSend,
           jurisdiction,
           lawBranch,
           personaMode,
+          voiceTone,
           attachments: currentAttachments,
           conversationHistory: updatedMessages.map((m) => ({ role: m.role, content: m.content || '' })),
         });
@@ -554,32 +749,60 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
       );
       setMessages(finalMessages);
       persistCurrentMessages(finalMessages);
+
+      // Auto-Voice Reply when enabled or when user spoke via mic
+      const shouldAutoSpeak = autoVoiceReply || lastInputWasVoiceRef.current;
+      lastInputWasVoiceRef.current = false;
+      if (shouldAutoSpeak && accumulatedText.trim()) {
+        speakText(accumulatedText, modelMsgId);
+      }
     } catch (error: any) {
-      console.error('Error during chat stream:', error);
-      const fallbackOpinion = generateAutonomousLegalOpinion({
-        query: textToSend,
-        jurisdiction,
-        lawBranch,
-        personaMode,
-        attachments: currentAttachments,
-        conversationHistory: updatedMessages.map((m) => ({ role: m.role, content: m.content || '' })),
-      });
-      const finalMessages = messagesWithPlaceholder.map((m) =>
-        m.id === modelMsgId
-          ? {
-              ...m,
-              content: m.content || fallbackOpinion,
-              isStreaming: false,
-            }
-          : m
-      );
-      setMessages(finalMessages);
-      persistCurrentMessages(finalMessages);
+      if (error?.name === 'AbortError') {
+        const stoppedText = accumulatedText.trim()
+          ? accumulatedText
+          : 'تم إيقاف التوليد بناءً على طلبك.';
+        const finalMessages = messagesWithPlaceholder.map((m) =>
+          m.id === modelMsgId ? { ...m, content: stoppedText, isStreaming: false } : m
+        );
+        setMessages(finalMessages);
+        persistCurrentMessages(finalMessages);
+      } else {
+        console.error('Error during chat stream:', error);
+        const fallbackOpinion = generateAutonomousLegalOpinion({
+          query: textToSend,
+          jurisdiction,
+          lawBranch,
+          personaMode,
+          voiceTone,
+          attachments: currentAttachments,
+          conversationHistory: updatedMessages.map((m) => ({ role: m.role, content: m.content || '' })),
+        });
+        const finalMessages = messagesWithPlaceholder.map((m) =>
+          m.id === modelMsgId
+            ? {
+                ...m,
+                content: accumulatedText.trim() || fallbackOpinion,
+                isStreaming: false,
+              }
+            : m
+        );
+        setMessages(finalMessages);
+        persistCurrentMessages(finalMessages);
+      }
     } finally {
       clearInterval(phaseInterval);
       setThoughtPhase('');
       setIsLoading(false);
     }
+  };
+
+  const handleRegenerateLast = () => {
+    if (isLoading || messages.length < 2) return;
+    const lastUserIdx = [...messages].map((m) => m.role).lastIndexOf('user');
+    if (lastUserIdx === -1) return;
+    const lastUserMsg = messages[lastUserIdx];
+    const truncatedHistory = messages.slice(0, lastUserIdx + 1);
+    handleSend(lastUserMsg.content, truncatedHistory);
   };
 
   const currentSession = sessions.find((s) => s.id === currentSessionId);
@@ -679,10 +902,10 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
 
               {/* Memo Content with Custom Font & Size */}
               <div
-                className={`prose prose-invert max-w-none ${fontStyle} ${lineStyle} whitespace-pre-wrap text-justify`}
+                className={`prose prose-invert max-w-none ${fontStyle} ${lineStyle}`}
                 style={{ fontSize: `${fontSize}px` }}
               >
-                {memoToFocus.content}
+                <RichMessageRenderer content={memoToFocus.content} />
               </div>
 
               {/* Action Tools */}
@@ -777,10 +1000,10 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                     </div>
 
                     <div
-                      className={`prose prose-invert max-w-none ${fontStyle} ${lineStyle} whitespace-pre-wrap text-justify`}
+                      className={`prose prose-invert max-w-none ${fontStyle} ${lineStyle}`}
                       style={{ fontSize: `${fontSize}px` }}
                     >
-                      {message.content}
+                      <RichMessageRenderer content={message.content} />
                     </div>
 
                     <div className="mt-6 pt-4 border-t border-slate-800/60 flex items-center justify-between flex-wrap gap-2 text-xs">
@@ -859,12 +1082,30 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
           )}
         </div>
 
-        {/* Right tools: Focus Mode & Start New Session */}
-        <div className="flex items-center gap-2">
+        {/* Right tools: Auto-Voice Reply, Focus Mode & Start New Session */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Auto-Voice Reply Toggle */}
+          <button
+            onClick={() => {
+              const next = !autoVoiceReply;
+              setAutoVoiceReply(next);
+              if (!next) stopAllSpeech();
+            }}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              autoVoiceReply
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-semibold'
+                : 'bg-slate-800/80 text-slate-300 border-slate-700/60 hover:text-amber-300'
+            }`}
+            title="تشغيل أو إيقاف النطق الصوتي التلقائي لردود العقل المستقل"
+          >
+            {autoVoiceReply ? <Volume2 className="w-3.5 h-3.5 text-emerald-400" /> : <VolumeX className="w-3.5 h-3.5" />}
+            <span>{autoVoiceReply ? 'الرد الصوتي: مفعّل' : 'الرد الصوتي التلقائي'}</span>
+          </button>
+
           {/* Focus Reading Mode Button */}
           <button
             onClick={handleEnterFocusMode}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             title="تفعيل وضع القراءة المركزة (إخفاء القوائم وتوسيع مساحة النص لقراءة المذكرات الطويلة)"
           >
             <BookOpen className="w-3.5 h-3.5 text-amber-400" />
@@ -873,8 +1114,8 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
 
           <button
             onClick={handleStartNewSession}
-            className="flex items-center gap-1 text-slate-300 hover:text-amber-400 transition-colors cursor-pointer px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60"
-            title="بدء جلسة استشارية قانونية جديدة وحفظ السابقة"
+            className="flex items-center gap-1 text-slate-300 hover:text-amber-400 transition-colors cursor-pointer px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 whitespace-nowrap shrink-0"
+            title="بدء جلسة حوارية جديدة وحفظ السابقة"
           >
             <RefreshCw className="w-3 h-3 text-amber-400" />
             <span>استشارة جديدة</span>
@@ -884,9 +1125,10 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
 
       {/* Messages Scroll Area */}
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6">
-        {messages.map((message) => {
+        {messages.map((message, msgIndex) => {
           const isUser = message.role === 'user';
           const isSpeaking = speakingId === message.id;
+          const isLastModelMessage = !isUser && msgIndex === messages.length - 1 && msgIndex > 0;
 
           return (
             <div
@@ -910,7 +1152,23 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                         <Scale className="w-4 h-4 text-amber-400" />
                         <span>العقل المستقل</span>
                         <span className="text-[10px] text-slate-400 font-normal">
-                          ({message.personaMode === 'friendly' ? 'محاور طبيعي' : message.personaMode === 'advocate' ? 'محامٍ مدافع' : 'مستشار قضائي'})
+                          ·{' '}
+                          {message.personaMode === 'natural'
+                            ? 'النمط الطبيعي'
+                            : message.personaMode === 'friendly'
+                            ? 'محاور مبسط'
+                            : message.personaMode === 'advocate'
+                            ? 'محامٍ مدافع'
+                            : 'مستشار قضائي'}
+                          {message.voiceTone
+                            ? ` · نبرة ${
+                                message.voiceTone === 'formal'
+                                  ? 'رسمية'
+                                  : message.voiceTone === 'technical'
+                                  ? 'تقنية'
+                                  : 'ودية'
+                              }`
+                            : ''}
                         </span>
                       </div>
                     )}
@@ -946,13 +1204,17 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                 )}
 
                 {/* Content body */}
-                <div className="prose prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap font-sans">
+                <div className="prose prose-invert max-w-none text-sm leading-relaxed font-sans">
                   {message.content ? (
-                    message.content
+                    isUser ? (
+                      <div className="whitespace-pre-wrap">{message.content}</div>
+                    ) : (
+                      <RichMessageRenderer content={message.content} />
+                    )
                   ) : message.isStreaming ? (
                     <span className="text-amber-300/80 text-xs flex items-center gap-2 italic py-1">
-                      <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-                      العقل المستقل يعكف على التكييف وتسطير الرأي القانوني...
+                      <span className="inline-block w-2 h-4 bg-amber-400 animate-pulse rounded-sm" />
+                      العقل المركزي يعكف على التحليل وصياغة الإجابة...
                     </span>
                   ) : null}
                   {message.isStreaming && message.content && (
@@ -965,7 +1227,17 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                   <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between flex-wrap gap-2 text-xs">
                     <div className="flex items-center gap-1 text-slate-400">
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-[11px]">تكييف وسند قانوني معتمد</span>
+                      <span className="text-[11px]">
+                        {message.lawBranch &&
+                        (message.lawBranch.includes('العلوم') ||
+                          message.lawBranch.includes('الفيزياء') ||
+                          message.lawBranch.includes('التكنولوجيا') ||
+                          message.lawBranch.includes('الطب') ||
+                          message.lawBranch.includes('الاقتصاد') ||
+                          message.lawBranch.includes('الفلسفة'))
+                          ? 'تحليل معرفي وعلمي موثوق'
+                          : 'تكييف وسند قانوني معتمد'}
+                      </span>
                     </div>
 
                     <div className="flex items-center gap-1">
@@ -1021,10 +1293,23 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
                         )}
                       </button>
 
+                      {/* Regenerate Response Button (ChatGPT-style) */}
+                      {isLastModelMessage && !message.isStreaming && (
+                        <button
+                          onClick={handleRegenerateLast}
+                          disabled={isLoading}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded hover:bg-slate-800 text-slate-400 hover:text-amber-400 transition-colors cursor-pointer disabled:opacity-40"
+                          title="إعادة توليد الإجابة بصياغة أو زاوية جديدة"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>إعادة التوليد</span>
+                        </button>
+                      )}
+
                       {/* Print Formal Memo */}
                       <button
                         onClick={() => printOpinion(message)}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+                        className="flex items-center gap-1 px-2.5 py-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
                         title="طباعة / تصدير كمذكرة استشارية رسمية"
                       >
                         <Printer className="w-3.5 h-3.5" />
@@ -1044,9 +1329,18 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
             <div className="bg-slate-900/90 border border-amber-500/30 rounded-xl px-4 py-3 text-xs text-amber-300 flex items-center gap-3 shadow-lg shadow-amber-950/20">
               <Brain className="w-5 h-5 text-amber-400 animate-spin" />
               <div className="flex flex-col">
-                <span className="font-semibold text-white">العقل المستقل يفكر...</span>
+                <span className="font-semibold text-white">العقل المركزي يفكر...</span>
                 <span className="text-amber-300/80 text-[11px]">{thoughtPhase}</span>
               </div>
+              <button
+                type="button"
+                onClick={handleStopGenerating}
+                className="mr-2 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-rose-950/70 border border-slate-700 hover:border-rose-500/50 text-slate-200 hover:text-rose-200 transition-colors cursor-pointer"
+                title="إيقاف توليد الإجابة"
+              >
+                <Square className="w-3 h-3 fill-current" />
+                <span>إيقاف</span>
+              </button>
             </div>
           </div>
         )}
@@ -1059,10 +1353,10 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
         <div className="px-4 py-2 border-t border-slate-800/60 bg-slate-950/40">
           <div className="flex items-center gap-2 mb-2 text-xs text-slate-400">
             <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-            <span>قضايا واستشارات قانونية جاهزة للبدء الفوري:</span>
+            <span>موضوعات علمية واستشارات قانونية جاهزة للبدء الفوري:</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {QUICK_LEGAL_PROMPTS.slice(0, 3).map((item, index) => (
+            {QUICK_LEGAL_PROMPTS.slice(0, 6).map((item, index) => (
               <button
                 key={index}
                 onClick={() => {
@@ -1150,9 +1444,23 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
           }
         }}
       >
+        {voiceNotice && (
+          <div className="mb-2 px-3 py-2 rounded-lg bg-amber-950/60 border border-amber-500/40 text-amber-200 text-xs flex items-center justify-between gap-2">
+            <span>{voiceNotice}</span>
+            <button
+              type="button"
+              onClick={() => setVoiceNotice(null)}
+              className="text-amber-300 hover:text-white text-[11px] px-1.5 cursor-pointer"
+            >
+              إغلاق
+            </button>
+          </div>
+        )}
+
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            lastInputWasVoiceRef.current = false;
             handleSend();
           }}
           className="relative flex items-center gap-2 mb-2"
@@ -1161,12 +1469,19 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
           <button
             type="button"
             onClick={toggleRecording}
-            className={`p-3 rounded-xl transition-all cursor-pointer ${
+            disabled={isTranscribing}
+            className={`p-3 rounded-xl transition-all cursor-pointer disabled:opacity-50 ${
               isRecording
                 ? 'bg-rose-600 text-white animate-pulse shadow-lg shadow-rose-600/30'
                 : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white'
             }`}
-            title={isRecording ? 'إيقاف التسجيل الصوتي' : 'تحدث بالصوت باللغة العربية'}
+            title={
+              isTranscribing
+                ? 'جاري تحويل الصوت إلى نص...'
+                : isRecording
+                ? 'إيقاف التسجيل الصوتي وإرسال النص'
+                : 'تحدث بالصوت (عربي / إنجليزي)'
+            }
           >
             {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
           </button>
@@ -1179,35 +1494,52 @@ export const ChatChamber: React.FC<ChatChamberProps> = ({
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
+                  lastInputWasVoiceRef.current = false;
                   handleSend();
                 }
               }}
               rows={2}
-              placeholder="اطرح وقائع قضيتك أو أرفق مستنداً بالأسفل... (مثال: أرفق عقد إيجار أو صورة شيك أو محرر لفحصه)"
+              placeholder="اسأل صوتياً أو كتابةً في أي علم (فيزياء، برمجة، طب، اقتصاد، فلسفة، أو قانون)..."
               className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors resize-none"
             />
             {isRecording && (
               <span className="absolute left-3 top-3 text-xs text-rose-400 animate-pulse flex items-center gap-1">
                 <span className="w-2 h-2 rounded-full bg-rose-500" />
-                جاري الاستماع لصوتك...
+                جاري تسجيل صوتك... اضغط مجدداً للإيقاف
+              </span>
+            )}
+            {isTranscribing && (
+              <span className="absolute left-3 top-3 text-xs text-amber-300 flex items-center gap-1">
+                جاري تحويل الصوت إلى نص...
               </span>
             )}
             {isDragOver && (
               <div className="absolute inset-0 bg-amber-950/80 border-2 border-dashed border-amber-400 rounded-xl flex items-center justify-center text-amber-300 font-bold text-xs pointer-events-none">
-                أفلت المستند القانوني هنا للإرفاق الفوري
+                أفلت الملف أو المستند هنا للإرفاق الفوري
               </div>
             )}
           </div>
 
-          {/* Send Button */}
-          <button
-            type="submit"
-            disabled={(!input.trim() && attachments.length === 0) || isLoading}
-            className="p-3.5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-slate-950 font-bold rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-amber-500/20 cursor-pointer"
-            title="إرسال للعقل المستقل"
-          >
-            <Send className="w-5 h-5 rotate-180" />
-          </button>
+          {/* Send / Stop Generating Button */}
+          {isLoading ? (
+            <button
+              type="button"
+              onClick={handleStopGenerating}
+              className="p-3.5 bg-slate-800 hover:bg-rose-600/90 border border-slate-700 hover:border-rose-500 text-white font-bold rounded-xl transition-all shadow-md cursor-pointer"
+              title="إيقاف التوليد"
+            >
+              <Square className="w-5 h-5 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!input.trim() && attachments.length === 0}
+              className="p-3.5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-slate-950 font-bold rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-amber-500/20 cursor-pointer"
+              title="إرسال للعقل المركزي"
+            >
+              <Send className="w-5 h-5 rotate-180" />
+            </button>
+          )}
         </form>
 
         {/* Toolbar Below the Input: Universal Attachments, Photos, Sheets, Snippets */}

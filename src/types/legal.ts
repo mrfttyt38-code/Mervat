@@ -8,6 +8,12 @@ export type Jurisdiction =
   | 'الأنظمة اللاتينية والإنجليزية (مقارن)';
 
 export type LawBranch =
+  | 'كافة العلوم والمعارف الشاملة'
+  | 'الفيزياء والرياضيات والهندسة'
+  | 'التكنولوجيا والبرمجة والذكاء الاصطناعي'
+  | 'الطب وعلوم الحياة والكيمياء'
+  | 'الاقتصاد والمال والإدارة الاستراتيجية'
+  | 'الفلسفة وعلم النفس والتاريخ والآداب'
   | 'القانون العام والشامل'
   | 'القانون المدني والالتزامات'
   | 'القانون الجنائي والعقوبات'
@@ -17,7 +23,9 @@ export type LawBranch =
   | 'القانون الدستوري وحقوق الإنسان'
   | 'قانون المرافعات والإجراءات القضائية';
 
-export type PersonaMode = 'friendly' | 'authoritative' | 'advocate';
+export type PersonaMode = 'natural' | 'friendly' | 'authoritative' | 'advocate';
+
+export type VoiceTone = 'formal' | 'friendly' | 'technical';
 
 export interface LegalAttachment {
   id: string;
@@ -37,6 +45,7 @@ export interface ChatMessage {
   jurisdiction?: string;
   lawBranch?: string;
   personaMode?: PersonaMode;
+  voiceTone?: VoiceTone;
   isStreaming?: boolean;
   attachments?: LegalAttachment[];
 }
@@ -49,6 +58,7 @@ export interface LegalChatSession {
   jurisdiction: Jurisdiction;
   lawBranch: LawBranch;
   personaMode: PersonaMode;
+  voiceTone?: VoiceTone;
   messages: ChatMessage[];
 }
 

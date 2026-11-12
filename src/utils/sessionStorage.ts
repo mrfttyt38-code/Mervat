@@ -1,23 +1,33 @@
-import { LegalChatSession, ChatMessage, Jurisdiction, LawBranch, PersonaMode } from '../types/legal';
+import { LegalChatSession, ChatMessage, Jurisdiction, LawBranch, PersonaMode, VoiceTone } from '../types/legal';
 
 const STORAGE_KEY = 'autonomous_legal_mind_sessions_v1';
 
 export function getInitialWelcomeMessage(
   jurisdiction: Jurisdiction,
   lawBranch: LawBranch,
-  personaMode: PersonaMode
+  personaMode: PersonaMode,
+  voiceTone: VoiceTone = 'friendly'
 ): ChatMessage {
+  const intro =
+    personaMode === 'natural'
+      ? `أهلاً بك! أنا "العقل المستقل" — المحاور الموسوعي والقانوني الذكي.
+أتمتع ببراعة شاملة في **كافة العلوم والمعارف** (الفيزياء والرياضيات، البرمجة والذكاء الاصطناعي، الطب وعلوم الحياة، الاقتصاد، الفلسفة والتاريخ والآداب) إلى جانب تمكني العميق من **كافة فروع القانون والقضاء**.
+
+اسألني في أي علم أو فكرة أو واقعة بطريقتك الطبيعية التلقائية (أو أرفق أي ملف أو مستند من الأسفل)، وسنتحاور معاً بعمق ومرونة خطوة بخطوة.`
+      : `أهلاً بك. أنا "العقل المستقل - المحاور الموسوعي والقانوني الشامل".
+أتمتع ببنية إدراكية متكاملة بارعة في كافة العلوم الطبيعية والتقنية والطبية والإنسانية، إلى جانب استيعاب كافة وقائع النزاعات والاستشارات في فروع القانون العام والخاص وصياغة الرأي المنهجي والقضائي السليم.
+
+تفضل بطرح سؤالك العلمي أو البرمجي أو الطبي أو الاقتصادي أو واقعة استشارتك القانونية، وسأقدم لك التحليل الدقيق والحلول العملية المباشرة.`;
+
   return {
     id: `init-${Date.now()}`,
     role: 'model',
-    content: `أهلاً بك. أنا "العقل المستقل - المحاور القانوني العام".
-أتمتع ببنية إدراكية قانونية ولغوية مستقلة، مصممة لاستيعاب كافة وقائع النزاعات والاستشارات في فروع القانون العام والخاص، وتكييفها تكييفاً قضائياً سليماً، وصياغة الرأي القانوني والدفوع الاستراتيجية بلسان فصيح وطبيعي.
-
-تفضل بسرد وقائع استشارتك أو قضيتك أو تساؤلك، وسأقوم بتحليلها تأصيلاً وتكييفاً وتقديم الحلول العملية المباشرة.`,
+    content: intro,
     timestamp: 'الآن',
     jurisdiction,
     lawBranch,
     personaMode,
+    voiceTone,
   };
 }
 
@@ -48,18 +58,20 @@ export function createNewSession(
   jurisdiction: Jurisdiction,
   lawBranch: LawBranch,
   personaMode: PersonaMode,
-  title?: string
+  title?: string,
+  voiceTone: VoiceTone = 'friendly'
 ): LegalChatSession {
-  const initialMessage = getInitialWelcomeMessage(jurisdiction, lawBranch, personaMode);
+  const initialMessage = getInitialWelcomeMessage(jurisdiction, lawBranch, personaMode, voiceTone);
   const now = Date.now();
   const newSession: LegalChatSession = {
     id: `session-${now}-${Math.random().toString(36).substring(2, 7)}`,
-    title: title || 'استشارة قانونية جديدة',
+    title: title || 'جلسة حوار ومعرفة جديدة',
     createdAt: now,
     updatedAt: now,
     jurisdiction,
     lawBranch,
     personaMode,
+    voiceTone,
     messages: [initialMessage],
   };
 

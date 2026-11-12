@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { generateAutonomousLegalOpinion } from './src/utils/autonomousLegalEngine.ts';
 
 dotenv.config();
@@ -25,57 +25,91 @@ const ai = new GoogleGenAI({
   },
 });
 
-// Legal system prompt builder
-function buildLegalMindSystemInstruction(jurisdiction: string, lawBranch: string, personaMode: string): string {
+// ChatGPT-Caliber Central Polymath & Legal Mind system prompt builder
+function buildLegalMindSystemInstruction(
+  jurisdiction: string,
+  lawBranch: string,
+  personaMode: string,
+  voiceTone: string = 'friendly'
+): string {
   let personaInstruction = '';
-  if (personaMode === 'friendly') {
+  if (personaMode === 'natural') {
     personaInstruction = `
-- النبرة والأسلوب: محاور طبيعي ودود، يبسط المفاهيم القانونية ويشرحها بلغة فصيحة قريبة ومريحة، كأنك مستشار شخصي حريص على مصلحة المستشير.`;
+- نمط الشخصية: النمط الطبيعي التام (أسلوب شات جي بي تي الحواري المرن).
+- تتحدث بتلقائية إنسانية، ذكاء اجتماعي، وخفة ظل متزنة عند الدردشة، وبعمق منهجي ودقة متناهية عند طرح الأسئلة العلمية أو البرمجية أو العملية أو القانونية، دون فرض أي قوالب جاهزة.`;
+  } else if (personaMode === 'friendly') {
+    personaInstruction = `
+- نمط الشخصية: محاور مبسط وواضح.
+- تشرح أعقد المفاهيم بلغة قريبة وأمثلة حياتية ملموسة مع الحفاظ على الدقة الكاملة.`;
   } else if (personaMode === 'advocate') {
     personaInstruction = `
-- النبرة والأسلوب: محامٍ ومدافع استراتيجي محنك، يركز على كسب الموقف القانوني، كشف ثغرات الخصم، وتحديد الدفوع والخطوات التكتيكية الحاسمة.`;
+- نمط الشخصية: محاجج استراتيجي ومدافع محنك.
+- تركز على البراهين القاطعة، مقارنة البدائل، وكشف الثغرات المنطقية أو القانونية وبناء أقوى حجة ممكنة.`;
   } else {
     personaInstruction = `
-- النبرة والأسلوب: مستشار قضائي رفيع، يجمع بين البلاغة الحوارية الطبيعية والعمق التحليلي الرصين، مع وزن الأدلة والحجج بميزان العدالة الدقيق.`;
+- نمط الشخصية: مستشار وباحث موسوعي رفيع.
+- تقدم تحليلاً رصيناً ومحايداً يزن المعطيات والأدلة بميزان العلم والقضاء.`;
   }
 
-  return `أنت "العقل المستقل - المحاور القانوني الذكي" (Autonomous Legal Mind).
-أنت كيان ذكاء اصطناعي قانوني ولغوي متطور جداً، تتحدث وتحاور تماماً كما يتحدث كبار المستشارين والذكاء التوليدي المتقدم: بلسان عربي مبين، ذكاء حواري طبيعي، استيعاب عميق لدقائق النزاعات، ومرونة تامة دون أي قوالب جامدة أو نصوص مسبقة الصنع.
+  let toneInstruction = '';
+  if (voiceTone === 'formal') {
+    toneInstruction = `- النبرة: رسمية رصينة. استخدم عربية فصحى محكمة وأسلوباً أكاديمياً ومهنياً وقوراً.`;
+  } else if (voiceTone === 'technical') {
+    toneInstruction = `- النبرة: تقنية تخصصية دقيقة. ركز على المصطلحات الهندسية والعلمية أو الإجرائية، المعادلات، والأكواد بإيجاز احترافي مباشر.`;
+  } else {
+    toneInstruction = `- النبرة: ودية مرنة وطبيعية. خاطب المستخدم بوضوح ودفء وسلاسة تشبه أرقى حوارات ChatGPT.`;
+  }
 
-تعليمات التخاطب والمحاورة الجوهرية (كيف ترد كعقل ذكي طبيعي):
-1. أجب عن صلب السؤال مباشرة من الجملة الأولى: لا تبدأ بعبارات روتينية أو عناوين مكررة، بل أعطِ المستشير خلاصة الموقف القانوني فوراً وبكل وضوح.
-2. حلل الوقائع بمنطق تحليلي مترابط: اشرح سبب كون الإجراء صحيحاً أو باطلاً، وما هي الآثار القانونية والمالية المترتبة عليه.
-3. قدّم خطوات عملية قابلة للتنفيذ: رتب له ما يجب فعله خطوة بخطوة (مثل: الإخطار، جمع الإثباتات، اللجوء للجهة المختصة، مواعيد التقادم).
-4. حاور بذكاء تفاعلي: إذا كانت هناك وقائع جوهرية لم يذكرها المستشير (مثل وجود عقد مكتوب، تاريخ الإشعار، إيصالات السداد، مكان العمل)، اطرح عليه سؤالاً أو سؤالين لمواصلة التحليل بدقة.
-5. لا تقيد نفسك بقالب ثابت: لا تقسم كل رد إجبارياً إلى "1. التكييف... 2. السند...". اكتب بتدفق حواري ثري مستخدماً فقرات رشيقة وعناوين ديناميكية تناسب سياق الاستشارة تحديداً.
-6. ادمج المواد القانونية والمبادئ القضائية بسلاسة وأناقة ضمن سياق الشرح.
+  return `أنت "العقل المستقل" — عقل ذكاء اصطناعي مركزي شامل بمستوى وقدرات **ChatGPT** في الفهم العميق، الاستنتاج المنطقي، الحوار الطبيعي، والإبداع عبر **جميع المجالات البشرية** إلى جانب براعتك القانونية الكاملة.
 
-النظام القانوني المعني: ${jurisdiction || 'القانون العام والقوانين المقارنة'}.
-الفرع القانوني: ${lawBranch || 'شامل'}.
+كيف تفكر وتتحاور كعقل ChatGPT المركزي:
+1. **ابدأ بالإجابة المباشرة فوراً:** لا تمهّد بمقدمات إنشائية طويلة ولا تكرر سؤال المستخدم؛ أعطِ الخلاصة أو الحل من أول جملة.
+2. **تكيّف بذكاء مع حجم السؤال وسياقه:**
+   - الأسئلة البسيطة أو التحيات والدردشة ("عامل ايه"، "احكيلي نكتة"، "قارن بين كذا وكذا باختصار"): أجب ببساطة وطبيعية وإيجاز ذكي دون محاضرات مطولة.
+   - الأسئلة المركبة (برمجة، رياضيات، فيزياء، طب، اقتصاد، تخطيط مشاريع، كتابة إبداعية، تلخيص، ترجمة، أو قضايا قانونية): نظم إجابتك بتنسيق Markdown نظيف (عناوين فرعية، نقاط واضحة، جداول مقارنة عند الحاجة، وكتل برمجية نظيفة قابلة للتشغيل مع ذكر اللغة).
+3. **ذاكرة سياقية حية ومتابعة دقيقة:** افهم أوامر التعديل والمتابعة القصيرة ("اختصر"، "لخصها في 3 نقاط"، "حوّلها لبايثون"، "ترجمها للإنجليزية"، "اشرحلي بمثال أبسط") بناءً على الرسائل السابقة في المحادثة مباشرة.
+4. **شمولية مطلقة في كل العلوم والمهارات:**
+   - **البرمجة والذكاء الاصطناعي:** كتابة وتصحيح الأكواد بجميع اللغات، تصميم الأنظمة (System Design)، قواعد البيانات، وتحليل الأداء.
+   - **العلوم البحتة والتطبيقية:** الفيزياء، الرياضيات، الكيمياء، الأحياء، الفلك، والطب (مع تنويه طبي مهني عند المسائل الصحية الشخصية فقط).
+   - **الأعمال والإنسانيات:** الاقتصاد، التسويق، الإدارة، الفلسفة، علم النفس، التاريخ، الأدب، الترجمة، وصياغة الإيميلات والخطط.
+   - **القانون والقضاء:** عند طرح نزاع قانوني أو عقد أو مسألة تنظيمية أو اختيار فرع قانوني، طبّق التكييف القضائي الدقيق وفق (${jurisdiction || 'القانون العام والمقارن'}) مع الدفوع والخطوات العملية.
+   - **قاعدة حاسمة:** لا تقحم مصطلحات المحاكم أو "قاضي الموضوع" في الأسئلة غير القانونية إطلاقاً!
+5. **الصدق والدقة:** إذا لم تتوفر معلومة محددة أو نص رقم مادة قانونية معينة بيقين، صرّح بذلك بأمانة أو قدّم القاعدة العامة الدقيقة دون تأليف.
+6. **تفاعل ختامي ذكي:** اختم الإجابات التحليلية بسؤال أو عرض مساعدة قصير وذكي يناسب السياق (مثلاً: "هل تود أن أكتب لك الكود كاملاً..." أو "هل تحب أن نلخص ذلك في جدول..." إلخ).
+
+التخصص النشط المختار حالياً: ${lawBranch || 'كافة العلوم والمعارف الشاملة'}.
+الاختصاص القانوني المرجعي (عند اللزوم القانوني): ${jurisdiction || 'عام ومقارن'}.
 ${personaInstruction}
-
-تنبيه مهني مدمج: اختم دائماً بتوجيه مهني رقيق وموجز بأن المشورة تهدف للتوجيه الاستراتيجي والتحليل النظامي وتتطلب مراجعة الأوراق الثبوتية أمام قاضي الموضوع.`;
+${toneInstruction}`;
 }
 
 async function streamGeminiWithFallback(params: {
   contents: any;
   systemInstruction?: string;
 }) {
-  const modelsToTry = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+  const modelsToTry = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
   let lastError: any = null;
 
   for (const model of modelsToTry) {
     try {
+      const config: any = {};
+      if (params.systemInstruction) {
+        config.systemInstruction = params.systemInstruction;
+      }
+      if (model === 'gemini-4-hydrogen') {
+        config.thinkingConfig = { thinkingLevel: ThinkingLevel.MEDIUM };
+      }
+
       const responseStream = await ai.models.generateContentStream({
         model,
         contents: params.contents,
-        config: params.systemInstruction ? { systemInstruction: params.systemInstruction } : undefined,
+        config,
       });
       return responseStream;
     } catch (err: any) {
       console.warn(`Attempt with ${model} failed, trying next model:`, err?.message);
       lastError = err;
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 300));
     }
   }
   throw lastError;
@@ -85,7 +119,7 @@ async function generateGeminiWithFallback(params: {
   contents: any;
   systemInstruction?: string;
 }) {
-  const modelsToTry = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+  const modelsToTry = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
   let lastError: any = null;
 
   for (const model of modelsToTry) {
@@ -99,7 +133,7 @@ async function generateGeminiWithFallback(params: {
     } catch (err: any) {
       console.warn(`Generate attempt with ${model} failed, trying next:`, err?.message);
       lastError = err;
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 300));
     }
   }
   throw lastError;
@@ -107,7 +141,13 @@ async function generateGeminiWithFallback(params: {
 
 // SSE Chat Stream Endpoint
 app.post('/api/legal-mind/chat-stream', async (req, res) => {
-  const { messages, jurisdiction = 'عام ومقارن', lawBranch = 'شامل', personaMode = 'authoritative' } = req.body;
+  const {
+    messages,
+    jurisdiction = 'عام ومقارن',
+    lawBranch = 'شامل',
+    personaMode = 'natural',
+    voiceTone = 'friendly',
+  } = req.body;
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     res.status(400).json({ error: 'قائمة الرسائل مطلوبة' });
@@ -145,7 +185,7 @@ app.post('/api/legal-mind/chat-stream', async (req, res) => {
   // Attempt Gemini API call if key is present
   if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY') {
     try {
-      const systemInstruction = buildLegalMindSystemInstruction(jurisdiction, lawBranch, personaMode);
+      const systemInstruction = buildLegalMindSystemInstruction(jurisdiction, lawBranch, personaMode, voiceTone);
 
       // Build sanitized contents ensuring it starts with user and alternates roles
       const sanitizedContents: { role: 'user' | 'model'; parts: any[] }[] = [];
@@ -172,7 +212,7 @@ app.post('/api/legal-mind/chat-stream', async (req, res) => {
             }
             if (att.textPreview) {
               parts.push({
-                text: `\n[مستند قانوني مرفق: ${att.name}]:\n"""\n${att.textPreview}\n"""\n`,
+                text: `\n[ملف / مستند مرفق: ${att.name}]:\n"""\n${att.textPreview}\n"""\n`,
               });
             }
           }
@@ -200,7 +240,7 @@ app.post('/api/legal-mind/chat-stream', async (req, res) => {
 
       // Timeout promise to avoid hanging indefinitely if Gemini API is sluggish
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Cloud response timeout')), 10000)
+        setTimeout(() => reject(new Error('Cloud response timeout')), 25000)
       );
 
       const responseStream = await Promise.race([
@@ -243,6 +283,7 @@ app.post('/api/legal-mind/chat-stream', async (req, res) => {
       jurisdiction,
       lawBranch,
       personaMode,
+      voiceTone,
       attachments: userAttachments,
       conversationHistory: messages.map((m: any) => ({ role: m.role, content: m.content || '' })),
     });
@@ -400,9 +441,141 @@ ${claims || 'أولاً: الحكم بإلزام المعلن إليه بالح�
   res.json({ draft: generatedDraft });
 });
 
+// Voice Transcription Endpoint (STT via Gemini 3.5 Transcribe)
+app.post('/api/voice/transcribe', async (req, res) => {
+  const { audioBase64, mimeType = 'audio/webm' } = req.body;
+  if (!audioBase64) {
+    res.status(400).json({ error: 'بيانات الصوت مطلوبة للتحويل إلى نص' });
+    return;
+  }
+
+  if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'MY_GEMINI_API_KEY') {
+    res.status(503).json({ error: 'خدمة التفريغ الصوتي السحابية غير متوفرة حالياً' });
+    return;
+  }
+
+  try {
+    const cleanBase64 = audioBase64.includes(',') ? audioBase64.split(',')[1] : audioBase64;
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-transcribe',
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType,
+              data: cleanBase64,
+            },
+          },
+          {
+            text: 'فرّغ هذا التسجيل الصوتي إلى نص واضح ودقيق بنفس اللغة المنطوقة (العربية أو الإنجليزية) بدون أي مقدمات أو تعليقات.',
+          },
+        ],
+      },
+    });
+
+    res.json({ text: (response.text || '').trim() });
+  } catch (err: any) {
+    console.warn('Voice transcription failed:', err?.message);
+    res.status(500).json({ error: 'تعذر تفريغ المقطع الصوتي' });
+  }
+});
+
+// Natural Arabic Voice Synthesis Endpoint (TTS via Gemini 3.8 Flash Lite TTS)
+app.post('/api/voice/tts', async (req, res) => {
+  const { text, voiceTone = 'friendly' } = req.body;
+  if (!text || !String(text).trim()) {
+    res.status(400).json({ error: 'النص مطلوب للتحويل إلى صوت' });
+    return;
+  }
+
+  if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'MY_GEMINI_API_KEY') {
+    res.status(503).json({ error: 'خدمة الصوت السحابية غير متوفرة حالياً' });
+    return;
+  }
+
+  try {
+    // Convert markdown/code cleanly to natural spoken text
+    const spokenText = String(text)
+      .replace(/```[\s\S]*?```/g, ' ... وإليك الكود البرمجي الموضح أمامك على الشاشة ... ')
+      .replace(/\|[-:\s|]+\|/g, ' ')
+      .replace(/\|/g, '، ')
+      .replace(/[#*`_~>]/g, '')
+      .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1800);
+
+    const voiceName =
+      voiceTone === 'formal' ? 'Charon' : voiceTone === 'technical' ? 'Fenrir' : 'Zephyr';
+    const style =
+      voiceTone === 'formal'
+        ? 'Clear, authoritative, articulate Arabic broadcaster'
+        : voiceTone === 'technical'
+        ? 'Calm, precise, analytical Arabic expert'
+        : 'Warm, friendly, natural conversational Arabic assistant';
+
+    let response: any;
+    try {
+      response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash-lite-tts',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: spokenText,
+                speechMetadata: { style },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName },
+            },
+          },
+        },
+      });
+    } catch {
+      response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash-lite-tts',
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: spokenText }],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName },
+            },
+          },
+        },
+      });
+    }
+
+    const audioBase64 =
+      response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
+    if (!audioBase64) {
+      res.status(502).json({ error: 'لم يتم إرجاع بيانات صوتية' });
+      return;
+    }
+
+    res.json({ audioBase64, mimeType: 'audio/wav' });
+  } catch (err: any) {
+    console.warn('Voice TTS failed, client will use browser speechSynthesis:', err?.message);
+    res.status(200).json({ fallbackBrowserTTS: true });
+  }
+});
+
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', engine: 'Autonomous Legal Mind - Gemini 3.8 Flash' });
+  res.json({ status: 'ok', engine: 'Autonomous Central Mind - Gemini 4 Hydrogen' });
 });
 
 // Vite Middleware for Development / Static serving for Production

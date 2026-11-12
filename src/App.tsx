@@ -9,7 +9,7 @@ import {
   Shield,
   BookOpen,
 } from 'lucide-react';
-import { Jurisdiction, LawBranch, PersonaMode } from './types/legal';
+import { Jurisdiction, LawBranch, PersonaMode, VoiceTone } from './types/legal';
 import { MindHeader } from './components/MindHeader';
 import { ChatChamber } from './components/ChatChamber';
 import { ContractAuditor } from './components/ContractAuditor';
@@ -22,8 +22,9 @@ type ActiveTab = 'chamber' | 'auditor' | 'drafter' | 'atlas';
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('chamber');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('عام ومقارن');
-  const [lawBranch, setLawBranch] = useState<LawBranch>('القانون العام والشامل');
-  const [personaMode, setPersonaMode] = useState<PersonaMode>('authoritative');
+  const [lawBranch, setLawBranch] = useState<LawBranch>('كافة العلوم والمعارف الشاملة');
+  const [personaMode, setPersonaMode] = useState<PersonaMode>('natural');
+  const [voiceTone, setVoiceTone] = useState<VoiceTone>('friendly');
   const [isCognitiveModalOpen, setIsCognitiveModalOpen] = useState(false);
 
   // Cross-component communication state (e.g. transfer query from auditor or atlas to chat)
@@ -51,6 +52,8 @@ export default function App() {
           setLawBranch={setLawBranch}
           personaMode={personaMode}
           setPersonaMode={setPersonaMode}
+          voiceTone={voiceTone}
+          setVoiceTone={setVoiceTone}
           onOpenCognitiveModal={() => setIsCognitiveModalOpen(true)}
         />
       )}
@@ -70,7 +73,7 @@ export default function App() {
               }`}
             >
               <MessageSquare className="w-4 h-4" />
-              <span>المحاور القانوني الحي (صوت وكتابة)</span>
+              <span>المحاور الموسوعي والقانوني (صوت وكتابة)</span>
             </button>
 
             <button
@@ -121,9 +124,11 @@ export default function App() {
             jurisdiction={jurisdiction}
             lawBranch={lawBranch}
             personaMode={personaMode}
+            voiceTone={voiceTone}
             onSelectBranch={handleSelectBranch}
             setJurisdiction={setJurisdiction}
             setPersonaMode={setPersonaMode}
+            setVoiceTone={setVoiceTone}
             injectedQuery={injectedChatQuery}
             onClearInjectedQuery={() => setInjectedChatQuery(null)}
             isFocusMode={isFocusReadingMode}
@@ -150,10 +155,14 @@ export default function App() {
         )}
       </main>
 
-      {/* Cognitive Mind Structure Modal */}
+      {/* Cognitive Mind Structure & Settings Modal */}
       <MindCognitiveModal
         isOpen={isCognitiveModalOpen}
         onClose={() => setIsCognitiveModalOpen(false)}
+        personaMode={personaMode}
+        setPersonaMode={setPersonaMode}
+        voiceTone={voiceTone}
+        setVoiceTone={setVoiceTone}
       />
     </div>
   );
